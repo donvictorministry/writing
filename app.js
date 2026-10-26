@@ -102,7 +102,22 @@ async function deleteCitationFromDB(id) {
 }
 
 /**
- * UI CUSTOM DIALOG / NOTIFICATION POPUP (CENTERED, NO ALERT())
+ * SCREEN CENTER SPINNER CONTROLS
+ */
+const spinner = document.getElementById('screen-center-spinner');
+const spinnerText = document.getElementById('spinner-status-text');
+
+function showSpinner(status = 'Processing...') {
+  spinnerText.textContent = status;
+  spinner.classList.add('active');
+}
+
+function hideSpinner() {
+  spinner.classList.remove('active');
+}
+
+/**
+ * MODAL DIALOG / FEEDBACK POPUP
  */
 function showModalDialog(title, message, isConfirm = false) {
   return new Promise((resolve) => {
@@ -138,26 +153,43 @@ function showModalDialog(title, message, isConfirm = false) {
 }
 
 /**
- * DOM INITIALIZATION & EVENT DISPATCHERS
+ * HISTORY STACK FOR UNDO / REDO
+ */
+const undoStack = [];
+const redoStack = [];
+let isUndoRedoAction = false;
+
+function recordEditorState(val) {
+  if (isUndoRedoAction) return;
+  if (undoStack.length === 0 || undoStack[undoStack.length - 1] !== val) {
+    undoStack.push(val);
+    redoStack.length = 0; // Clear redo upon new edits
+    if (undoStack.length > 50) undoStack.shift();
+  }
+}
+
+/**
+ * DOM INITIALIZATION
  */
 document.addEventListener('DOMContentLoaded', async () => {
   await initDB();
 
-  // Register Service Worker
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch((err) => {
-      console.warn('SW registration failed:', err);
-    });
+    navigator.serviceWorker.register('./sw.js').catch(err => console.warn('SW err:', err));
   }
 
   const editor = document.getElementById('main-editor');
   const renderedView = document.getElementById('grammar-rendered-view');
   const resultsArea = document.getElementById('results-display-area');
-
-  // Left & Right Sidebar Drawers
   const leftSidebar = document.getElementById('sidebar-left');
   const rightSidebar = document.getElementById('sidebar-right');
+  const fileInput = document.getElementById('file-import-input');
 
+  // Seed history
+  recordEditorState(editor.value);
+  editor.addEventListener('input', () => recordEditorState(editor.value));
+
+  // Sidebar Open & Close
   document.getElementById('open-left-sidebar').onclick = () => leftSidebar.classList.add('active');
   document.getElementById('open-right-sidebar').onclick = () => rightSidebar.classList.add('active');
 
@@ -168,7 +200,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
   });
 
-  // Modal navigation handlers
+  // FIX 2: EXIT BUTTON CLOSES SIDEBAR & BRINGS USER DIRECTLY TO HOME/EDITOR
+  document.getElementById('btn-exit-app').onclick = () => {
+    rightSidebar.classList.remove('active');
+    leftSidebar.classList.remove('active');
+    document.querySelectorAll('.full-modal').forEach(m => m.classList.remove('active'));
+    editor.scrollIntoView({ behavior: 'smooth' });
+    editor.focus();
+  };
+
+  // Modal navigation
   document.querySelectorAll('[data-modal]').forEach(trigger => {
     trigger.addEventListener('click', () => {
       const modalId = trigger.getAttribute('data-modal');
@@ -184,31 +225,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     btn.addEventListener('click', (e) => {
       const modal = e.target.closest('.full-modal');
       if (modal) modal.classList.remove('active');
-    });
-  });
-
-  // Developer Bio Read More Toggle
-  const devBioShort = document.getElementById('dev-bio-short');
-  const devBioFull = document.getElementById('dev-bio-full');
-  const devBioBtn = document.getElementById('btn-toggle-dev-bio');
-  if (devBioBtn) {
-    devBioBtn.onclick = () => {
-      if (devBioFull.style.display === 'none') {
-        devBioFull.style.display = 'block';
-        devBioBtn.textContent = 'Show Less';
-      } else {
-        devBioFull.style.display = 'none';
-        devBioBtn.textContent = 'Show More';
-      }
-    };
-  }
-
-  // Team Navigation jump arrows
-  document.querySelectorAll('.nav-arrow').forEach(arrow => {
-    arrow.addEventListener('click', () => {
-      const targetId = arrow.getAttribute('data-target');
-      const el = document.getElementById(targetId);
-      if (el) el.scrollIntoView({ behavior: 'smooth' });
     });
   });
 
@@ -235,106 +251,164 @@ document.addEventListener('DOMContentLoaded', async () => {
     fontValLabel.textContent = `${val}px`;
   };
 
-  // Copy to Clipboard
-  document.getElementById('action-copy').onclick = async () => {
-    if (!editor.value) {
-      showModalDialog('Clipboard Empty', 'There is no text to copy.');
+  // FIX 4: HORIZONTAL TOOLBAR ACTIONS WITH TEXT LABELS
+  // 1. Paste
+  document.getElementById('tool-paste').onclick = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) {
+        showModalDialog('Clipboard Empty', 'No text found on clipboard to paste.');
+        return;
+      }
+      editor.value += (editor.value ? '\n' : '') + text;
+      recordEditorState(editor.value);
+      showModalDialog('Pasted', 'Text pasted successfully into the editor.');
+    } catch (e) {
+      showModalDialog('Clipboard Access', 'Paste manually or enable browser clipboard permissions.');
+    }
+  };
+
+  // 2. Copy
+  document.getElementById('tool-copy').onclick = async () => {
+    if (!editor.value.trim()) {
+      showModalDialog('Editor Empty', 'There is no text to copy.');
       return;
     }
     await navigator.clipboard.writeText(editor.value);
-    showModalDialog('Success', 'Text copied directly to your clipboard!');
+    showModalDialog('Success', 'Editor text copied to clipboard!');
   };
 
-  // Paste from Clipboard
-  document.getElementById('action-paste').onclick = async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      editor.value += (editor.value ? '\n' : '') + text;
-      showModalDialog('Pasted', 'Clipboard contents inserted.');
-    } catch (e) {
-      showModalDialog('Permission Error', 'Please allow clipboard permissions or paste manually into the editor.');
+  // 3. Clear
+  document.getElementById('tool-clear').onclick = async () => {
+    if (!editor.value) return;
+    const confirm = await showModalDialog('Clear Editor', 'Delete all text currently inside the editor?', true);
+    if (confirm) {
+      recordEditorState(editor.value);
+      editor.value = '';
+      recordEditorState('');
+      resultsArea.style.display = 'none';
+      renderedView.style.display = 'none';
+      editor.style.display = 'block';
     }
   };
 
-  // Load Demonstration Text
-  document.getElementById('action-demo').onclick = () => {
-    editor.value = "Artificial intelligence is a branch of computer science that builds smart machines. In order to make systems effective, researchers must verify grammar and ensure citations are valid.";
-    renderedView.style.display = 'none';
-    editor.style.display = 'block';
+  // 4. Undo
+  document.getElementById('tool-undo').onclick = () => {
+    if (undoStack.length <= 1) {
+      showModalDialog('Undo', 'No prior actions to undo.');
+      return;
+    }
+    isUndoRedoAction = true;
+    const current = undoStack.pop();
+    redoStack.push(current);
+    const previous = undoStack[undoStack.length - 1];
+    editor.value = previous;
+    isUndoRedoAction = false;
   };
 
-  // Save File to IndexedDB
+  // 5. Redo
+  document.getElementById('tool-redo').onclick = () => {
+    if (redoStack.length === 0) {
+      showModalDialog('Redo', 'No actions to redo.');
+      return;
+    }
+    isUndoRedoAction = true;
+    const next = redoStack.pop();
+    undoStack.push(next);
+    editor.value = next;
+    isUndoRedoAction = false;
+  };
+
+  // 6. Import
+  document.getElementById('tool-import').onclick = () => {
+    fileInput.value = '';
+    fileInput.click();
+  };
+
+  fileInput.onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const content = evt.target.result;
+      editor.value = content;
+      recordEditorState(editor.value);
+      showModalDialog('Imported', `Successfully loaded "${file.name}" into editor.`);
+    };
+    reader.readAsText(file);
+  };
+
+  // Save Document to IndexedDB
   document.getElementById('tile-save-doc').onclick = async () => {
     if (!editor.value.trim()) {
-      showModalDialog('Document Empty', 'Please enter text before saving.');
+      showModalDialog('Empty Draft', 'Please write something before saving.');
       return;
     }
     await saveDocumentToDB(editor.value);
-    showModalDialog('Saved', 'Document successfully stored in IndexedDB.');
+    showModalDialog('Saved', 'Document safely stored in IndexedDB.');
   };
 
+  // FIX 7: SCREEN-CENTERED SPINNER INTEGRATION ACROSS ALL JOBS
+
   // Paraphraser Action
-  async function handleParaphrase() {
+  document.getElementById('tile-paraphrase').onclick = async () => {
     const text = editor.value.trim();
-    if (!text) {
-      showModalDialog('Text Required', 'Enter text in the editor to paraphrase.');
-      return;
-    }
-    showLoaderResults('Generating paraphrased variations...');
+    if (!text) return showModalDialog('Text Required', 'Enter text to paraphrase.');
+
+    showSpinner('Paraphrasing text with Hugging Face models...');
     try {
       const alts = await getParaphrasedAlternatives(text);
       displayParaphraseResults(alts);
     } catch (err) {
-      showModalDialog('Paraphrase Notice', err.message);
+      showModalDialog('Paraphraser', err.message);
+    } finally {
+      hideSpinner();
     }
-  }
-
-  document.getElementById('tile-paraphrase').onclick = handleParaphrase;
-  document.getElementById('action-quick-paraphrase').onclick = handleParaphrase;
+  };
 
   // Summarize Action
   document.getElementById('tile-summarize').onclick = async () => {
     const text = editor.value.trim();
-    if (!text) {
-      showModalDialog('Text Required', 'Enter text in the editor to summarize.');
-      return;
-    }
-    showLoaderResults('Distilling summary with Hugging Face models...');
+    if (!text) return showModalDialog('Text Required', 'Enter text to summarize.');
+
+    showSpinner('Distilling summary...');
     try {
       const summary = await getSummarizedText(text);
-      displaySingleResult('Summarized Draft', summary);
+      displaySingleResult('Summary Result', summary);
     } catch (err) {
-      showModalDialog('Summarizer Notice', err.message);
+      showModalDialog('Summarizer', err.message);
+    } finally {
+      hideSpinner();
     }
   };
 
   // Grammar Checker Action
   document.getElementById('tile-grammar').onclick = async () => {
     const text = editor.value.trim();
-    if (!text) {
-      showModalDialog('Text Required', 'Enter text in the editor to check grammar.');
-      return;
-    }
-    showLoaderResults('Checking text against LanguageTool rules...');
+    if (!text) return showModalDialog('Text Required', 'Enter text to check grammar.');
+
+    showSpinner('Analyzing grammar with LanguageTool...');
     try {
       const matches = await checkGrammar(text);
       if (matches.length === 0) {
         resultsArea.style.display = 'block';
         resultsArea.innerHTML = `
           <div class="results-card">
-            <h3 style="color:var(--success);">Grammar Check Complete</h3>
-            <p>No grammatical, spelling, or syntactic mistakes were found in your draft.</p>
+            <h3 style="color:var(--success);">No Grammar Errors Found</h3>
+            <p>Your draft adheres cleanly to grammatical standards.</p>
           </div>
         `;
         return;
       }
       displayGrammarResults(matches, text);
     } catch (err) {
-      showModalDialog('Grammar Check Notice', err.message);
+      showModalDialog('Grammar Checker', err.message);
+    } finally {
+      hideSpinner();
     }
   };
 
-  // Citation & Bibliography Tiles
+  // Citation Generator & Bibliography Screens
   document.getElementById('tile-citation').onclick = () => {
     document.getElementById('modal-biblio-manager').classList.add('active');
     renderCitationsList();
@@ -345,30 +419,38 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderCitationsList();
   };
 
-  // Citation Search Handlers
+  // Citation Lookups with Centered Spinner
   document.getElementById('btn-search-doi').onclick = async () => {
     const q = document.getElementById('citation-query-input').value.trim();
-    if (!q) return showModalDialog('Query Needed', 'Enter a valid DOI.');
+    if (!q) return showModalDialog('Query Needed', 'Enter a DOI.');
+
+    showSpinner('Retrieving DOI metadata via Crossref...');
     try {
       const cit = await fetchCitationByDOI(q);
       await saveCitationToDB(cit);
-      showModalDialog('Success', 'APA Citation generated and added to Bibliography.');
+      showModalDialog('Success', 'APA Citation resolved and stored in Bibliography.');
       renderCitationsList();
     } catch (e) {
       showModalDialog('DOI Lookup Failed', e.message);
+    } finally {
+      hideSpinner();
     }
   };
 
   document.getElementById('btn-search-book').onclick = async () => {
     const q = document.getElementById('citation-query-input').value.trim();
     if (!q) return showModalDialog('Query Needed', 'Enter a book title.');
+
+    showSpinner('Fetching catalog details via Open Library...');
     try {
       const cit = await fetchCitationByBookTitle(q);
       await saveCitationToDB(cit);
-      showModalDialog('Success', 'Citation fetched and stored in Bibliography.');
+      showModalDialog('Success', 'Book reference formatted and added to Bibliography.');
       renderCitationsList();
     } catch (e) {
       showModalDialog('Search Failed', e.message);
+    } finally {
+      hideSpinner();
     }
   };
 
@@ -376,32 +458,30 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('export-biblio-btn').onclick = async () => {
     const citations = await getStoredCitations();
     if (citations.length === 0) {
-      showModalDialog('Empty Bibliography', 'No citations are currently recorded.');
+      showModalDialog('Bibliography Empty', 'No references saved.');
       return;
     }
     const plainText = citations.map((c, i) => `[${i + 1}] ${c.apa}`).join('\n\n');
     await navigator.clipboard.writeText(plainText);
-    showModalDialog('Exported', 'Bibliography exported and copied to clipboard as plain text!');
+    showModalDialog('Exported', 'Bibliography copied to clipboard as plain text!');
   };
 
-  // Share App handler
+  // Share Application
   document.getElementById('btn-share-app').onclick = async () => {
     if (navigator.share) {
       try {
         await navigator.share({
           title: 'DV-Writing Assistant',
-          text: 'Check out this mobile-first writing and citation assistant!',
+          text: 'Check out DV-Writing Assistant!',
           url: window.location.href
         });
-      } catch (e) {
-        // user canceled
-      }
+      } catch (e) {}
     } else {
       showModalDialog('Share Link', window.location.href);
     }
   };
 
-  // Install PWA Trigger
+  // Install PWA Prompt
   let deferredPrompt;
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
@@ -412,55 +492,118 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (deferredPrompt) {
       deferredPrompt.prompt();
     } else {
-      showModalDialog('Install PWA', 'To install DV-Writing Assistant, tap the three dots in your Android Chrome browser and choose "Add to Home screen".');
+      showModalDialog('Install PWA', 'Tap the 3 dots in your Android Chrome browser and tap "Add to Home screen".');
     }
   };
 
-  // Exit App Handler
-  document.getElementById('btn-exit-app').onclick = () => {
-    window.close();
-    showModalDialog('Exit Application', 'You can safely close this browser tab.');
-  };
+  // Jump Arrows for Team Members
+  document.querySelectorAll('.nav-arrow').forEach(arrow => {
+    arrow.addEventListener('click', () => {
+      const targetId = arrow.getAttribute('data-target');
+      const el = document.getElementById(targetId);
+      if (el) el.scrollIntoView({ behavior: 'smooth' });
+    });
+  });
+
+  // Toggle Developer Bio
+  const devBioFull = document.getElementById('dev-bio-full');
+  const devBioBtn = document.getElementById('btn-toggle-dev-bio');
+  if (devBioBtn) {
+    devBioBtn.onclick = () => {
+      if (devBioFull.style.display === 'none') {
+        devBioFull.style.display = 'block';
+        devBioBtn.textContent = 'Show Less';
+      } else {
+        devBioFull.style.display = 'none';
+        devBioBtn.textContent = 'Show More';
+      }
+    };
+  }
 });
 
 /**
- * RENDERING HELPERS FOR RESULTS AND SAVED FILES
+ * FIX 8: HORIZONTAL ACTION BUTTONS (COPY, SHARE, REPLACE IN EDITOR) ON EVERY OUTPUT
  */
-function showLoaderResults(msg) {
-  const container = document.getElementById('results-display-area');
-  container.style.display = 'block';
-  container.innerHTML = `
-    <div class="results-card" style="text-align:center;">
-      <p style="font-weight:600;">${msg}</p>
+function createHorizontalOutputActions(textToActOn) {
+  const enc = encodeURIComponent(textToActOn);
+  return `
+    <div class="output-actions-horizontal">
+      <button class="output-action-btn btn-copy-out" data-text="${enc}">
+        <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+        <span>Copy</span>
+      </button>
+
+      <button class="output-action-btn btn-share-out" data-text="${enc}">
+        <svg viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z"/></svg>
+        <span>Share</span>
+      </button>
+
+      <button class="output-action-btn btn-replace" data-text="${enc}">
+        <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+        <span>Replace in Editor</span>
+      </button>
     </div>
   `;
+}
+
+function attachOutputActionListeners(scope) {
+  // Copy
+  scope.querySelectorAll('.btn-copy-out').forEach(b => {
+    b.onclick = async () => {
+      const text = decodeURIComponent(b.getAttribute('data-text'));
+      await navigator.clipboard.writeText(text);
+      showModalDialog('Copied', 'Output copied to clipboard.');
+    };
+  });
+
+  // Share
+  scope.querySelectorAll('.btn-share-out').forEach(b => {
+    b.onclick = async () => {
+      const text = decodeURIComponent(b.getAttribute('data-text'));
+      if (navigator.share) {
+        try {
+          await navigator.share({ title: 'DV-Writing Output', text });
+        } catch (e) {}
+      } else {
+        await navigator.clipboard.writeText(text);
+        showModalDialog('Share', 'Output copied to clipboard for manual sharing.');
+      }
+    };
+  });
+
+  // Replace in Editor
+  scope.querySelectorAll('.btn-replace').forEach(b => {
+    b.onclick = () => {
+      const text = decodeURIComponent(b.getAttribute('data-text'));
+      const editor = document.getElementById('main-editor');
+      editor.value = text;
+      recordEditorState(text);
+      document.getElementById('grammar-rendered-view').style.display = 'none';
+      editor.style.display = 'block';
+      editor.scrollIntoView({ behavior: 'smooth' });
+      showModalDialog('Applied', 'Replacement applied to the primary editor.');
+    };
+  });
 }
 
 function displayParaphraseResults(alternatives) {
   const container = document.getElementById('results-display-area');
   container.style.display = 'block';
-  
+
   let html = `<div class="results-card"><h3>Paraphrased Alternatives</h3>`;
-  alternatives.forEach((alt, idx) => {
+  alternatives.forEach(alt => {
     html += `
       <div class="result-item-box">
         <p>${alt}</p>
-        <div class="result-item-actions">
-          <button class="secondary-btn apply-alt-btn" data-text="${encodeURIComponent(alt)}">Replace in Editor</button>
-        </div>
+        ${createHorizontalOutputActions(alt)}
       </div>
     `;
   });
   html += `</div>`;
   container.innerHTML = html;
 
-  container.querySelectorAll('.apply-alt-btn').forEach(b => {
-    b.onclick = () => {
-      const text = decodeURIComponent(b.getAttribute('data-text'));
-      document.getElementById('main-editor').value = text;
-      showModalDialog('Applied', 'Replacement updated in the main editor.');
-    };
-  });
+  attachOutputActionListeners(container);
+  container.scrollIntoView({ behavior: 'smooth' });
 }
 
 function displaySingleResult(title, text) {
@@ -471,17 +614,13 @@ function displaySingleResult(title, text) {
       <h3>${title}</h3>
       <div class="result-item-box">
         <p>${text}</p>
-        <div class="result-item-actions">
-          <button class="secondary-btn" id="apply-summary-btn">Insert Into Editor</button>
-        </div>
+        ${createHorizontalOutputActions(text)}
       </div>
     </div>
   `;
 
-  document.getElementById('apply-summary-btn').onclick = () => {
-    document.getElementById('main-editor').value = text;
-    showModalDialog('Applied', 'Text replaced in main editor.');
-  };
+  attachOutputActionListeners(container);
+  container.scrollIntoView({ behavior: 'smooth' });
 }
 
 function displayGrammarResults(matches, originalText) {
@@ -499,21 +638,21 @@ function displayGrammarResults(matches, originalText) {
     <div class="results-card">
       <div style="display:flex; justify-content:space-between; align-items:center;">
         <h3>Grammar Diagnostics (${errorCount})</h3>
-        <button class="secondary-btn" id="exit-grammar-view">Close Inspection</button>
+        <button class="secondary-btn" id="exit-grammar-view">Exit Inspection</button>
       </div>
   `;
 
-  matches.forEach((m, idx) => {
+  matches.forEach(m => {
     const errorWord = originalText.substring(m.offset, m.offset + m.length);
-    const replacement = m.replacements[0]?.value || 'Remove';
+    const replacement = m.replacements[0]?.value || '';
+    const suggestedSentence = originalText.substring(0, m.offset) + replacement + originalText.substring(m.offset + m.length);
+
     listHtml += `
       <div class="result-item-box">
         <p><strong>Issue:</strong> ${m.message}</p>
         <p><strong>Found:</strong> <span style="text-decoration:line-through; color:var(--error);">${errorWord}</span></p>
-        <p><strong>Suggested:</strong> <span style="color:var(--success); font-weight:700;">${replacement}</span></p>
-        <div class="result-item-actions">
-          <button class="primary-btn fix-error-btn" data-start="${m.offset}" data-len="${m.length}" data-rep="${replacement}">Fix</button>
-        </div>
+        <p><strong>Correction:</strong> <span style="color:var(--success); font-weight:700;">${replacement || '[Remove]'}</span></p>
+        ${createHorizontalOutputActions(suggestedSentence)}
       </div>
     `;
   });
@@ -527,20 +666,8 @@ function displayGrammarResults(matches, originalText) {
     container.style.display = 'none';
   };
 
-  container.querySelectorAll('.fix-error-btn').forEach(btn => {
-    btn.onclick = () => {
-      const start = Number(btn.getAttribute('data-start'));
-      const len = Number(btn.getAttribute('data-len'));
-      const rep = btn.getAttribute('data-rep');
-      const cur = editor.value;
-      editor.value = cur.substring(0, start) + rep + cur.substring(start + len);
-      
-      renderedView.style.display = 'none';
-      editor.style.display = 'block';
-      container.style.display = 'none';
-      showModalDialog('Corrected', 'Grammar fix applied to editor.');
-    };
-  });
+  attachOutputActionListeners(container);
+  container.scrollIntoView({ behavior: 'smooth' });
 }
 
 async function renderCitationsList() {
@@ -557,11 +684,14 @@ async function renderCitationsList() {
       <p style="font-weight:700;">${c.title}</p>
       <p style="font-size:18px;"><strong>APA:</strong> ${c.apa}</p>
       <p style="font-size:18px;"><strong>MLA:</strong> ${c.mla}</p>
-      <div class="result-item-actions">
-        <button class="secondary-btn delete-cit-btn" data-id="${c.id}">Remove</button>
+      ${createHorizontalOutputActions(c.apa)}
+      <div style="display:flex; justify-content:flex-end; margin-top:8px;">
+        <button class="secondary-btn delete-cit-btn" data-id="${c.id}">Remove Citation</button>
       </div>
     </div>
   `).join('');
+
+  attachOutputActionListeners(container);
 
   container.querySelectorAll('.delete-cit-btn').forEach(btn => {
     btn.onclick = async () => {
@@ -577,7 +707,7 @@ async function loadSavedFilesView() {
   const docs = await getSavedDocuments();
 
   if (docs.length === 0) {
-    container.innerHTML = `<p style="text-align:center; padding:20px;">No saved documents found in IndexedDB storage.</p>`;
+    container.innerHTML = `<p style="text-align:center; padding:20px;">No saved documents found.</p>`;
     return;
   }
 
@@ -585,24 +715,14 @@ async function loadSavedFilesView() {
     <div class="result-item-box">
       <p style="font-weight:600;">Saved on ${new Date(d.updatedAt).toLocaleDateString()} at ${new Date(d.updatedAt).toLocaleTimeString()}</p>
       <p>${d.snippet}</p>
-      <div class="result-item-actions">
-        <button class="primary-btn open-doc-btn" data-id="${d.id}">Open</button>
+      ${createHorizontalOutputActions(d.content)}
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
         <button class="secondary-btn delete-doc-btn" data-id="${d.id}">Delete</button>
       </div>
     </div>
   `).join('');
 
-  container.querySelectorAll('.open-doc-btn').forEach(btn => {
-    btn.onclick = () => {
-      const id = Number(btn.getAttribute('data-id'));
-      const target = docs.find(x => x.id === id);
-      if (target) {
-        document.getElementById('main-editor').value = target.content;
-        document.getElementById('modal-saved-files').classList.remove('active');
-        showModalDialog('Document Loaded', 'Loaded into your main editor.');
-      }
-    };
-  });
+  attachOutputActionListeners(container);
 
   container.querySelectorAll('.delete-doc-btn').forEach(btn => {
     btn.onclick = async () => {

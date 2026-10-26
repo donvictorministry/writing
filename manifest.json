@@ -1,0 +1,22 @@
+{
+  "short_name": "DV-Assistant",
+  "name": "DV-Writing Assistant",
+  "description": "Mobile-First AI & Grammar Writing Assistant inspired by QuillBot",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FFFFFF",
+  "theme_color": "#DF1E5A",
+  "icons": [
+    {
+      "src": "https://via.placeholder.com/192x192/DF1E5A/FFFFFF?text=DV",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "https://via.placeholder.com/512x512/DF1E5A/FFFFFF?text=DV+Assistant",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ]
+}
